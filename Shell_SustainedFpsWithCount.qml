@@ -112,7 +112,8 @@ Item {
                    The error ratio and interval for checking can be tweaked by the benchmark
                    tool to improve the accuracy of the results.
                  */
-                var errorRatio = Math.abs(1 - root.fps / root.targetFrameRate);
+                //var errorRatio = Math.abs(1 - root.fps / root.targetFrameRate);
+                var errorRatio = 1.0 - ( root.fps / root.targetFrameRate  );
                 var ok = errorRatio < benchmark.fpsTolerance
 
                 var max = Number.MAX_VALUE;

@@ -3,6 +3,9 @@
 #include <QtCore>
 #include <QtGui>
 #include <QtQuick>
+#include <QProcess>
+#include <QThread>
+
 
 #include "qcommandlineparser.h"
 
@@ -11,11 +14,27 @@ static bool onlyPrintJson = false;
 class ResultRecorder
 {
     static QVariantMap m_results;
-
 public:
-    static void startResults(const QString &id)
+    static QDateTime    m_dtTimestamp;
+
+    static void startResults(const QString &id, const QString &strPlatformName)
     {
         m_results["id"] = id;
+
+//        QVariantMap mapRun;
+//        QStringList lisRunDetails = id.split(",");
+
+//        for( int i=0; i<lisRunDetails.count(); ++i )
+//        {
+//            if (i==0)
+//                mapRun["basecommit"] = lisRunDetails[i].trimmed();
+//            else if (i==1)
+//                mapRun["declarativecommit"] = lisRunDetails[i].trimmed();
+//            else if (i==2)
+//                mapRun["buildnumber"] = lisRunDetails[i].trimmed();
+//        }
+//        m_results["rundetails"] = mapRun;
+
 
         QString prettyProductName =
 #if QT_VERSION >= 0x050400
@@ -39,6 +58,7 @@ public:
         QVariantMap osMap;
         osMap["prettyProductName"] = prettyProductName;
         osMap["platformPlugin"] = QGuiApplication::platformName();
+        osMap["platformName"] = strPlatformName;
         m_results["os"] = osMap;
 
         // The following code makes the assumption that an OpenGL context the GUI
@@ -87,22 +107,42 @@ public:
         context.doneCurrent();
     }
 
+    static void recordRunDetails(const QVariantMap mapRunDetails)
+    {
+        m_results["rundetails"] = mapRunDetails;
+    }
+
     static void recordWindowSize(const QSize &windowSize)
     {
         m_results["windowSize"] = QString::number(windowSize.width()) + "x" + QString::number(windowSize.height());
     }
 
-    static void recordOperationsPerFrame(const QString &benchmark, int ops)
+    static void recordOperationsPerFrame(const QString &benchmark, const QString &qstrCategory, int ops)
     {
         QVariantMap benchMap = m_results[benchmark].toMap();
         QVariantList benchResults = benchMap["results"].toList();
         benchResults.append(ops);
 
+        benchMap["category"] = qstrCategory;
         benchMap["results"] = benchResults;
+        benchMap["timestamp"] = m_dtTimestamp;
         m_results[benchmark] = benchMap;
 
         if (!onlyPrintJson)
             std::cout << "    " << ops << " ops/frame" << std::endl;
+    }
+
+    static void recordSystemLoad(float fLoadPct)
+    {
+        QVariantList lisLoad = m_results["load"].toList();
+        QVariantMap mapLoadRecord;
+        mapLoadRecord["load"] = fLoadPct;
+        mapLoadRecord["timestamp"] = m_dtTimestamp;
+        lisLoad.append(mapLoadRecord);
+        m_results["load"] = lisLoad;
+
+        if (!onlyPrintJson)
+            std::cout << "    " << fLoadPct << " system load" << std::endl;
     }
 
     static void recordOperationsPerFrameAverage(const QString &benchmark, int ops, int repetitions)
@@ -126,6 +166,8 @@ public:
     }
 };
 QVariantMap ResultRecorder::m_results;
+QDateTime   ResultRecorder::m_dtTimestamp;
+
 
 class FpsDecider : public QWindow
 {
@@ -261,6 +303,7 @@ struct Benchmark
     }
 
     QString fileName;
+    QString qstrCategory;
     QSize windowSize;
 
     bool completed;
@@ -304,6 +347,10 @@ public:
     bool verbose() const { return options.verbose; }
 
     int count() const { return options.count; }
+    void setTimestamp(const QDateTime &dtTimestamp)
+    {
+        m_dtTimestamp = dtTimestamp;
+    }
 
 public slots:
     void recordOperationsPerFrame(qreal count);
@@ -318,6 +365,8 @@ private:
     void abortAll();
 
     int m_currentBenchmark;
+    QDateTime m_dtTimestamp;
+
 
     QQuickView *m_view;
     QQmlComponent *m_component;
@@ -411,6 +460,42 @@ int main(int argc, char **argv)
                                  QStringLiteral("1"));
     parser.addOption(medianReduce);
 
+    QCommandLineOption platformName(QStringLiteral("platformname"),
+                                 QStringLiteral("Specify the platform name for analytics purposes"),
+                                 QStringLiteral("name"),
+                                 QStringLiteral(""));
+    parser.addOption(platformName);
+    QCommandLineOption baseCommit(QStringLiteral("basecommit"),
+                                 QStringLiteral("Specify the basecommit ID for analytics purposes"),
+                                 QStringLiteral("ID"),
+                                 QStringLiteral(""));
+    parser.addOption(baseCommit);
+    QCommandLineOption declarativeCommit(QStringLiteral("declarativecommit"),
+                                 QStringLiteral("Specify the declarativeCommit ID for analytics purposes"),
+                                 QStringLiteral("ID"),
+                                 QStringLiteral(""));
+    parser.addOption(declarativeCommit);
+    QCommandLineOption buildNumber(QStringLiteral("build"),
+                                 QStringLiteral("Specify the jenkins build number for analytics purposes"),
+                                 QStringLiteral("ID"),
+                                 QStringLiteral(""));
+    parser.addOption(buildNumber);
+    QCommandLineOption branchName(QStringLiteral("branch"),
+                                 QStringLiteral("Specify the branch name for analytics purposes"),
+                                 QStringLiteral("name"),
+                                 QStringLiteral(""));
+    parser.addOption(branchName);
+    QCommandLineOption category(QStringLiteral("category"),
+                                 QStringLiteral("Specify the benchmark category for analytics purposes"),
+                                 QStringLiteral("name"),
+                                 QStringLiteral(""));
+    parser.addOption(category);
+    QCommandLineOption runId(QStringLiteral("runid"),
+                                 QStringLiteral("Specify the run id in a multi run benchmark for analytics purposes"),
+                                 QStringLiteral("ID"),
+                                 QStringLiteral(""));
+    parser.addOption(runId);
+
 
     parser.addPositionalArgument(QStringLiteral("input"),
                                  QStringLiteral("One or more QML files or a directory of QML files to benchmark"));
@@ -453,8 +538,18 @@ int main(int argc, char **argv)
     if (size.isValid())
         runner.options.windowSize = size;
 
-    ResultRecorder::startResults(parser.value(idOption));
+    ResultRecorder::startResults(parser.value(idOption), parser.value(platformName));
     ResultRecorder::recordWindowSize(runner.options.windowSize);
+
+    QVariantMap mapRun;
+
+    mapRun["basecommit"] = parser.value(baseCommit);
+    mapRun["declarativecommit"] = parser.value(declarativeCommit);
+    mapRun["buildnumber"] = parser.value(buildNumber);
+    mapRun["branchname"] = parser.value(branchName);
+    mapRun["runid"] = parser.value(runId);
+
+    ResultRecorder::recordRunDetails(mapRun);
 
     if (parser.isSet(fpsOverrideOption))
         runner.options.fpsOverride = parser.value(fpsOverrideOption).toFloat();
@@ -471,11 +566,16 @@ int main(int argc, char **argv)
         if (!info.exists()) {
             qWarning() << "input doesn't exist:" << input;
         } else if (info.suffix() == QStringLiteral("qml")) {
-            runner.benchmarks << Benchmark(info.absoluteFilePath());
+            Benchmark benchmark(info.absoluteFilePath());
+            benchmark.qstrCategory = parser.value(category);
+            runner.benchmarks << benchmark;
         } else if (info.isDir()) {
+            //QString qstrCategory = info.absolutePath().split("/").back();
             QDirIterator iterator(input, QStringList() << QStringLiteral("*.qml"));
             while (iterator.hasNext()) {
-                runner.benchmarks << Benchmark(iterator.next());
+                Benchmark benchmark(iterator.next());
+                benchmark.qstrCategory = parser.value(category);
+                runner.benchmarks << benchmark;
             }
         }
     }
@@ -495,7 +595,14 @@ int main(int argc, char **argv)
         foreach (const Benchmark &b, runner.benchmarks) {
             std::cout << " - " << b.fileName.toStdString() << std::endl;
         }
+        qint64 iPid = app.applicationPid();
+        std::cout << "ProcessID: "<<iPid<<std::endl;
     }
+
+
+
+//    char c;
+//    std::cin>>c;
 
     if (!runner.execute())
         return 0;
@@ -549,6 +656,29 @@ void BenchmarkRunner::start()
 {
     Benchmark &bm = benchmarks[m_currentBenchmark];
 
+
+    QDateTime dtTimestamp = QDateTime::currentDateTime();
+    setTimestamp(dtTimestamp);
+    ResultRecorder::m_dtTimestamp = dtTimestamp;
+
+    // if on Linux, let's record the system load by spawning mpstat (TODO: Figure out for the other OSes)
+    {
+        // sleep a bit and let the system cool down
+        QThread::sleep ( 1 );
+
+        QProcess process;
+        process.start("bash", QStringList() << "-c" << "/usr/bin/mpstat -P ALL | head -n 4 | tail -n 1 | tr -s  \" \" | cut -d \" \" -f 14 | tr -s \",\" \".\"");
+        process.waitForFinished(-1);
+        QByteArray out = process.readAllStandardOutput();
+        QString strMpstatResult = QString::fromLatin1(out);
+
+        float fLoad = 100.0f - strMpstatResult.toFloat();
+//        std::cout << "MPStat results: "<<std::endl;
+//        std::cout << fLoad << std::endl;
+
+        ResultRecorder::recordSystemLoad(fLoad);
+    }
+
     if (bm.operationsPerFrame.size() == 0 && !onlyPrintJson)
         std::cout << "running: " << bm.fileName.toStdString() << std::endl;
 
@@ -598,7 +728,7 @@ void BenchmarkRunner::recordOperationsPerFrame(qreal ops)
     Benchmark &bm = benchmarks[m_currentBenchmark];
     bm.completed = true;
     bm.operationsPerFrame << ops;
-    ResultRecorder::recordOperationsPerFrame(bm.fileName, ops);
+    ResultRecorder::recordOperationsPerFrame(bm.fileName, bm.qstrCategory, ops);
     int repetitions = options.repeat + options.medianReduce * 2;
     if (bm.operationsPerFrame.size() == repetitions && repetitions > 1) {
 
