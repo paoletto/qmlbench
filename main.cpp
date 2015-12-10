@@ -548,6 +548,13 @@ int main(int argc, char **argv)
     mapRun["buildnumber"] = parser.value(buildNumber);
     mapRun["branchname"] = parser.value(branchName);
     mapRun["runid"] = parser.value(runId);
+    if (qEnvironmentVariableIsSet("QT_HASH_SEED"))
+    {
+        bool bOK = false;
+        int iHashSeed = qEnvironmentVariableIntValue("QT_HASH_SEED",&bOK);
+        if (bOK)
+            mapRun["hashSeed"] = iHashSeed;
+    }
 
     ResultRecorder::recordRunDetails(mapRun);
 
